@@ -1,0 +1,1371 @@
+// import React, { useEffect, useRef, useState } from 'react';
+// import { useLocation, useParams } from 'react-router-dom';
+// import { io } from 'socket.io-client';
+
+// const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+// const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+// export default function Meeting() {
+//   const { roomId } = useParams();
+//   const { state } = useLocation();
+//   const name = state?.name || 'Guest';
+//   const isCreator = state?.isCreator || false;
+
+//   const socketRef = useRef(null);
+//   const localVideoRef = useRef(null);
+//   const localStreamRef = useRef(null);
+//   const peersRef = useRef({});
+
+//   const [remoteStreams, setRemoteStreams] = useState({});
+//   const [chat, setChat] = useState([]);
+
+//   useEffect(() => {
+//     const s = io(SERVER_URL);
+//     socketRef.current = s;
+//     let mounted = true;
+
+//     function addChat(msg) {
+//       setChat(prev => [...prev, msg]);
+//     }
+
+//     async function startLocal() {
+//       try {
+//         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+//         if (!mounted) {
+//           stream.getTracks().forEach(t => t.stop());
+//           return;
+//         }
+//         if (localVideoRef.current) {
+//           localVideoRef.current.srcObject = stream;
+//           localVideoRef.current.muted = true;
+//         }
+//         localStreamRef.current = stream;
+//       } catch (err) {
+//         console.error('getUserMedia error', err);
+//         alert('Unable to access camera/microphone: ' + (err?.message || err));
+//       }
+//     }
+//     startLocal();
+
+//     // Signaling helpers
+//     async function createPeerConnection(peerSocketId) {
+//       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+//       if (localStreamRef.current) {
+//         try {
+//           localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
+//         } catch (err) {
+//           console.warn('Error adding local tracks to pc', err);
+//         }
+//       }
+
+//       pc.ontrack = (ev) => {
+//         if (!mounted) return;
+//         setRemoteStreams(prev => ({ ...prev, [peerSocketId]: ev.streams[0] }));
+//       };
+
+//       pc.onicecandidate = (event) => {
+//         if (event.candidate && socketRef.current && socketRef.current.connected) {
+//           socketRef.current.emit('ice-candidate', {
+//             to: peerSocketId,
+//             candidate: event.candidate,
+//             from: socketRef.current.id
+//           });
+//         }
+//       };
+
+//       peersRef.current[peerSocketId] = pc;
+//       return pc;
+//     }
+
+//     async function createOffer(targetSocketId) {
+//       let pc = peersRef.current[targetSocketId];
+//       if (!pc) pc = await createPeerConnection(targetSocketId);
+//       const offer = await pc.createOffer();
+//       await pc.setLocalDescription(offer);
+//       if (socketRef.current && socketRef.current.connected) {
+//         socketRef.current.emit('offer', { to: targetSocketId, sdp: pc.localDescription, from: socketRef.current.id, name });
+//       }
+//     }
+
+//     async function handleOffer(from, sdp) {
+//       let pc = peersRef.current[from];
+//       if (!pc) pc = await createPeerConnection(from);
+//       try {
+//         await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+//       } catch (err) {
+//         console.warn('setRemoteDescription failed', err);
+//       }
+//       const answer = await pc.createAnswer();
+//       await pc.setLocalDescription(answer);
+//       if (socketRef.current && socketRef.current.connected) {
+//         socketRef.current.emit('answer', { to: from, sdp: pc.localDescription, from: socketRef.current.id });
+//       }
+//     }
+
+//     // Socket handlers
+//     s.on('connect', () => {
+//       if (isCreator) {
+//         s.emit('create-room', { roomId, name });
+//       } else {
+//         s.emit('join-room', { roomId, name });
+//       }
+//     });
+
+//     s.on('user-joined', async ({ socketId }) => {
+//       try {
+//         await createOffer(socketId);
+//       } catch (err) {
+//         console.error('createOffer error', err);
+//       }
+//     });
+
+//     s.on('existing-participants', async (list) => {
+//       for (const p of list) {
+//         try {
+//           await createOffer(p.socketId);
+//         } catch (err) {
+//           console.error('createOffer (existing) error', err);
+//         }
+//       }
+//     });
+
+//     s.on('offer', async ({ from, sdp }) => {
+//       try {
+//         await handleOffer(from, sdp);
+//       } catch (err) {
+//         console.error('handleOffer error', err);
+//       }
+//     });
+
+//     s.on('answer', async ({ from, sdp }) => {
+//       const pc = peersRef.current[from];
+//       if (pc) {
+//         try {
+//           await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+//         } catch (err) {
+//           console.warn('setRemoteDescription on answer failed', err);
+//         }
+//       }
+//     });
+
+//     s.on('ice-candidate', async ({ from, candidate }) => {
+//       const pc = peersRef.current[from];
+//       if (pc && candidate) {
+//         try {
+//           await pc.addIceCandidate(candidate);
+//         } catch (err) {
+//           console.warn('addIceCandidate failed', err);
+//         }
+//       }
+//     });
+
+//     s.on('user-left', ({ socketId }) => {
+//       try {
+//         if (peersRef.current && peersRef.current[socketId]) {
+//           const pc = peersRef.current[socketId];
+//           if (pc && typeof pc.close === 'function') {
+//             try { pc.close(); } catch (closeErr) { console.warn('Error closing pc', closeErr); }
+//           }
+//           try { delete peersRef.current[socketId]; } catch (delErr) { console.warn('Error deleting peer ref', delErr); }
+//         }
+
+//         setRemoteStreams(prev => {
+//           if (!prev || typeof prev !== 'object') return prev;
+//           const copy = { ...prev };
+//           if (copy[socketId]) delete copy[socketId];
+//           return copy;
+//         });
+//       } catch (e) {
+//         console.warn('user-left handler failed', e);
+//       }
+//     });
+
+//     s.on('chat-message', ({ name: senderName, message, time }) => {
+//       addChat({ name: senderName, message, time });
+//     });
+
+//     // cleanup
+//     return () => {
+//       mounted = false;
+
+//       if (peersRef.current && typeof peersRef.current === 'object') {
+//         Object.values(peersRef.current).forEach(pc => {
+//           if (pc && typeof pc.close === 'function') {
+//             try { pc.close(); } catch (err) { console.warn('Peer close failed:', err); }
+//           }
+//         });
+//         peersRef.current = {};
+//       }
+
+//       if (localStreamRef.current instanceof MediaStream) {
+//         try {
+//           localStreamRef.current.getTracks().forEach(track => {
+//             if (track && typeof track.stop === 'function') track.stop();
+//           });
+//         } catch (err) {
+//           console.warn('Error stopping local tracks:', err);
+//         } finally {
+//           localStreamRef.current = null;
+//         }
+//       }
+
+//       const sock = socketRef.current;
+//       if (sock) {
+//         try {
+//           if (typeof sock.removeAllListeners === 'function') sock.removeAllListeners();
+//           else if (typeof sock.off === 'function') sock.off();
+//         } catch (err) { console.warn('Error removing socket listeners:', err); }
+//         try { if (typeof sock.disconnect === 'function') sock.disconnect(); } catch (err) { console.warn('Error disconnecting socket:', err); }
+//         socketRef.current = null;
+//       }
+//     };
+//   }, [isCreator, name, roomId]);
+
+//   // controls
+//   const toggleMute = () => {
+//     if (!localStreamRef.current) return;
+//     localStreamRef.current.getAudioTracks().forEach(t => (t.enabled = !t.enabled));
+//   };
+
+//   const toggleCam = () => {
+//     if (!localStreamRef.current) return;
+//     localStreamRef.current.getVideoTracks().forEach(t => (t.enabled = !t.enabled));
+//   };
+
+//   const shareScreen = async () => {
+//     try {
+//       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+//       const screenTrack = screenStream.getVideoTracks()[0];
+//       if (!screenTrack) return;
+//       for (const pid in peersRef.current) {
+//         const pc = peersRef.current[pid];
+//         const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+//         if (senders[0]) { try { await senders[0].replaceTrack(screenTrack); } catch (err) { console.warn(err); } }
+//       }
+//       if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+//       screenTrack.onended = () => {
+//         if (localStreamRef.current) {
+//           const camTrack = localStreamRef.current.getVideoTracks()[0];
+//           for (const pid in peersRef.current) {
+//             const pc = peersRef.current[pid];
+//             const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+//             if (senders[0] && camTrack) {
+//               try { senders[0].replaceTrack(camTrack); } catch (err) { console.warn(err); }
+//             }
+//           }
+//           if (localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+//         }
+//       };
+//     } catch (err) {
+//       console.warn('Screen share failed', err);
+//     }
+//   };
+
+//   const sendChat = (text) => {
+//     if (!text) return;
+//     if (socketRef.current && socketRef.current.connected) {
+//       socketRef.current.emit('chat-message', { roomId, message: text, name });
+//       setChat(prev => [...prev, { name: 'You', message: text, time: new Date().toISOString() }]);
+//     }
+//   };
+
+//   return (
+//     <div className="min-h-screen bg-slate-100 p-2">
+//       <div className="max-w-7xl mx-auto">
+//         <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+//           <div className="lg:col-span-2">
+//             <div className="bg-white rounded shadow p-2">
+//               <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
+//                 <div className="relative">
+//                   <video ref={localVideoRef} autoPlay playsInline className="w-full h-48 bg-black rounded" />
+//                   <div className="absolute bottom-1 left-1 bg-black/50 text-white text-xs px-2 rounded">You</div>
+//                 </div>
+
+//                 {Object.entries(remoteStreams).map(([id, stream]) => (
+//                   <div key={id} className="relative">
+//                     <VideoPlayer stream={stream} />
+//                     <div className="absolute bottom-1 left-1 bg-black/50 text-white text-xs px-2 rounded">{id}</div>
+//                   </div>
+//                 ))}
+//               </div>
+//             </div>
+
+//             <div className="mt-2 flex gap-2">
+//               <button onClick={toggleMute} className="px-4 py-2 bg-gray-800 text-white rounded">Mute/Unmute</button>
+//               <button onClick={toggleCam} className="px-4 py-2 bg-gray-800 text-white rounded">Cam On/Off</button>
+//               <button onClick={shareScreen} className="px-4 py-2 bg-blue-600 text-white rounded">Share Screen</button>
+//             </div>
+//           </div>
+
+//           <div>
+//             <div className="bg-white rounded shadow p-2 h-[70vh] overflow-y-auto">
+//               <Chat messages={chat} onSend={sendChat} />
+//             </div>
+//           </div>
+//         </div>
+//       </div>
+//     </div>
+//   );
+// }
+
+// // helper components
+// function VideoPlayer({ stream }) {
+//   const ref = useRef();
+//   useEffect(() => { if (ref.current) ref.current.srcObject = stream; }, [stream]);
+//   return <video ref={ref} autoPlay playsInline className="w-full h-48 bg-black rounded" />;
+// }
+
+// function Chat({ messages, onSend }) {
+//   const [val, setVal] = useState('');
+//   const submit = (e) => {
+//     e?.preventDefault();
+//     const v = val.trim();
+//     if (!v) return;
+//     onSend(v);
+//     setVal('');
+//   };
+//   return (
+//     <div className="flex flex-col h-full">
+//       <div className="flex-1 overflow-y-auto p-2">
+//         {messages.map((m, i) => (
+//           <div key={i} className="mb-2">
+//             <div className="text-sm font-semibold">
+//               {m.name} <span className="text-xs text-gray-500 ml-2">{new Date(m.time).toLocaleTimeString()}</span>
+//             </div>
+//             <div>{m.message}</div>
+//           </div>
+//         ))}
+//       </div>
+
+//       <form onSubmit={submit} className="flex gap-2 p-2">
+//         <input value={val} onChange={e => setVal(e.target.value)} className="flex-1 p-2 border rounded" placeholder="Type a message..." />
+//         <button type="submit" className="bg-green-600 text-white px-4 rounded">Send</button>
+//       </form>
+//     </div>
+//   );
+// }
+
+
+// client/src/pages/Meeting.jsx
+// import React, { useEffect, useRef, useState } from 'react';
+// import { useLocation, useParams } from 'react-router-dom';
+// import { io } from 'socket.io-client';
+
+// const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+// const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+// export default function Meeting() {
+//   const { roomId } = useParams();
+//   const { state } = useLocation();
+//   const name = state?.name || 'Guest';
+//   const isCreator = state?.isCreator || false;
+
+//   // Refs and signaling state (as before)
+//   const socketRef = useRef(null);
+//   const localVideoRef = useRef(null);       // main local video element (may show camera or screen)
+//   const localStreamRef = useRef(null);      // camera stream (always kept)
+//   const peersRef = useRef({});              // socketId => RTCPeerConnection
+
+//   const [remoteStreams, setRemoteStreams] = useState({}); // {socketId: MediaStream}
+//   const [chat, setChat] = useState([]);
+//   const [showChat, setShowChat] = useState(false);
+
+//   // UI interactions
+//   const [selectedTile, setSelectedTile] = useState(null); // socketId or 'local' for expanded view
+//   const [isScreenSharing, setIsScreenSharing] = useState(false);
+//   const [isMuted, setMuted] = useState(false);
+//   const [camOn, setCamOn] = useState(true);
+
+//   // overlay (local camera when sharing screen) - position and size (pixels)
+//   const [overlay, setOverlay] = useState({ x: 20, y: 20, w: 220, h: 140, dragging: false, resizing: false, offsetX: 0, offsetY: 0 });
+
+//   useEffect(() => {
+//     const s = io(SERVER_URL);
+//     socketRef.current = s;
+//     let mounted = true;
+
+//     function addChat(msg) {
+//       setChat(prev => [...prev, msg]);
+//     }
+
+//     // initialize local camera stream (kept as localStreamRef)
+//     async function startLocalCamera() {
+//       try {
+//         const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+//         if (!mounted) { stream.getTracks().forEach(t => t.stop()); return; }
+//         localStreamRef.current = stream;
+//         // show camera initially
+//         if (localVideoRef.current && !isScreenSharing) localVideoRef.current.srcObject = stream;
+//       } catch (err) {
+//         console.error('getUserMedia error', err);
+//         alert('Unable to access camera/microphone: ' + (err?.message || err));
+//       }
+//     }
+//     startLocalCamera();
+
+//     // --- Signaling helpers ---
+//     async function createPeerConnection(peerSocketId) {
+//       const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+//       // add local tracks (camera/audio)
+//       if (localStreamRef.current) {
+//         try {
+//           localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
+//         } catch (err) {
+//           console.warn('Error adding local tracks', err);
+//         }
+//       }
+
+//       pc.ontrack = (ev) => {
+//         if (!mounted) return;
+//         // ev.streams[0] is the remote stream
+//         setRemoteStreams(prev => ({ ...prev, [peerSocketId]: ev.streams[0] }));
+//       };
+
+//       pc.onicecandidate = (event) => {
+//         if (event.candidate && socketRef.current && socketRef.current.connected) {
+//           socketRef.current.emit('ice-candidate', { to: peerSocketId, candidate: event.candidate, from: socketRef.current.id });
+//         }
+//       };
+
+//       peersRef.current[peerSocketId] = pc;
+//       return pc;
+//     }
+
+//     async function createOffer(targetSocketId) {
+//       let pc = peersRef.current[targetSocketId];
+//       if (!pc) pc = await createPeerConnection(targetSocketId);
+//       const offer = await pc.createOffer();
+//       await pc.setLocalDescription(offer);
+//       if (socketRef.current && socketRef.current.connected) {
+//         socketRef.current.emit('offer', { to: targetSocketId, sdp: pc.localDescription, from: socketRef.current.id, name });
+//       }
+//     }
+
+//     async function handleOffer(from, sdp) {
+//       let pc = peersRef.current[from];
+//       if (!pc) pc = await createPeerConnection(from);
+//       try { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); } catch (err) { console.warn('setRemoteDescription failed', err); }
+//       const answer = await pc.createAnswer();
+//       await pc.setLocalDescription(answer);
+//       if (socketRef.current && socketRef.current.connected) {
+//         socketRef.current.emit('answer', { to: from, sdp: pc.localDescription, from: socketRef.current.id });
+//       }
+//     }
+
+//     // socket handlers
+//     s.on('connect', () => {
+//       if (isCreator) s.emit('create-room', { roomId, name });
+//       else s.emit('join-room', { roomId, name });
+//     });
+
+//     s.on('user-joined', async ({ socketId }) => { try { await createOffer(socketId); } catch (err) { console.error(err); } });
+//     s.on('existing-participants', async (list) => { for (const p of list) { try { await createOffer(p.socketId); } catch (err) { console.error(err); } } });
+//     s.on('offer', async ({ from, sdp }) => { try { await handleOffer(from, sdp); } catch (err) { console.error(err); } });
+//     s.on('answer', async ({ from, sdp }) => { const pc = peersRef.current[from]; if (pc) { try { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); } catch (err) { console.warn(err); } } });
+//     s.on('ice-candidate', async ({ from, candidate }) => { const pc = peersRef.current[from]; if (pc && candidate) { try { await pc.addIceCandidate(candidate); } catch (err) { console.warn(err); } } });
+
+//     // user left handler, defensive
+//     s.on('user-left', ({ socketId }) => {
+//       try {
+//         if (peersRef.current && peersRef.current[socketId]) {
+//           const pc = peersRef.current[socketId];
+//           if (pc && typeof pc.close === 'function') {
+//             try { pc.close(); } catch (closeErr) { console.warn('Error closing pc', closeErr); }
+//           }
+//           try { delete peersRef.current[socketId]; } catch (delErr) { console.warn('Error deleting peer ref', delErr); }
+//         }
+//         setRemoteStreams(prev => {
+//           if (!prev || typeof prev !== 'object') return prev;
+//           const copy = { ...prev };
+//           if (copy[socketId]) delete copy[socketId];
+//           return copy;
+//         });
+//       } catch (e) {
+//         console.warn('user-left handler failed', e);
+//       }
+//     });
+
+//     s.on('chat-message', ({ name: senderName, message, time }) => addChat({ name: senderName, message, time }));
+
+//     // cleanup
+//     return () => {
+//       mounted = false;
+//       if (peersRef.current && typeof peersRef.current === 'object') {
+//         Object.values(peersRef.current).forEach(pc => { if (pc && typeof pc.close === 'function') try { pc.close(); } catch (e) {} });
+//         peersRef.current = {};
+//       }
+//       if (localStreamRef.current instanceof MediaStream) {
+//         try { localStreamRef.current.getTracks().forEach(t => { if (t && typeof t.stop === 'function') t.stop(); }); } catch (err) { console.warn(err); } finally { localStreamRef.current = null; }
+//       }
+//       const sock = socketRef.current;
+//       if (sock) {
+//         try { if (typeof sock.removeAllListeners === 'function') sock.removeAllListeners(); else if (typeof sock.off === 'function') sock.off(); } catch (err) { console.warn(err); }
+//         try { if (typeof sock.disconnect === 'function') sock.disconnect(); } catch (err) { console.warn(err); }
+//         socketRef.current = null;
+//       }
+//     };
+//   }, [isCreator, name, roomId]);
+
+//   // Controls
+//   const toggleMute = () => {
+//     if (!localStreamRef.current) return;
+//     localStreamRef.current.getAudioTracks().forEach(t => (t.enabled = !t.enabled));
+//     setMuted(prev => !prev);
+//   };
+
+//   const toggleCam = () => {
+//     if (!localStreamRef.current) return;
+//     localStreamRef.current.getVideoTracks().forEach(t => (t.enabled = !t.enabled));
+//     setCamOn(prev => !prev);
+//   };
+
+//   // Share screen: replaces outgoing video track for peers but keeps localStreamRef (camera) intact
+//   const shareScreen = async () => {
+//     if (isScreenSharing) {
+//       // stop screen sharing: restore camera in localVideo and replace senders back to camera track
+//       // Note: localStreamRef.current should already be camera
+//       if (localVideoRef.current && localStreamRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+//       for (const pid in peersRef.current) {
+//         const pc = peersRef.current[pid];
+//         const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+//         if (senders[0] && localStreamRef.current?.getVideoTracks()[0]) {
+//           try { await senders[0].replaceTrack(localStreamRef.current.getVideoTracks()[0]); } catch (err) { console.warn(err); }
+//         }
+//       }
+//       setIsScreenSharing(false);
+//       return;
+//     }
+
+//     try {
+//       const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+//       if (!screenStream) return;
+//       // show screen locally
+//       if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+//       // replace video track for all peers
+//       const screenTrack = screenStream.getVideoTracks()[0];
+//       for (const pid in peersRef.current) {
+//         const pc = peersRef.current[pid];
+//         const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+//         if (senders[0]) {
+//           try { await senders[0].replaceTrack(screenTrack); } catch (err) { console.warn('replaceTrack error', err); }
+//         }
+//       }
+//       setIsScreenSharing(true);
+
+//       // when screen stops, restore camera
+//       screenTrack.onended = async () => {
+//         try {
+//           if (localStreamRef.current && localVideoRef.current) {
+//             localVideoRef.current.srcObject = localStreamRef.current;
+//           }
+//           for (const pid in peersRef.current) {
+//             const pc = peersRef.current[pid];
+//             const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+//             if (senders[0] && localStreamRef.current?.getVideoTracks()[0]) {
+//               try { await senders[0].replaceTrack(localStreamRef.current.getVideoTracks()[0]); } catch (err) { console.warn(err); }
+//             }
+//           }
+//         } catch (err) {
+//           console.warn('error restoring camera after screen share ended', err);
+//         } finally {
+//           setIsScreenSharing(false);
+//         }
+//       };
+//     } catch (err) {
+//       console.warn('Screen share failed', err);
+//     }
+//   };
+
+//   // Chat send
+//   const sendChat = (text) => {
+//     if (!text || !socketRef.current) return;
+//     socketRef.current.emit('chat-message', { roomId, message: text, name });
+//     setChat(prev => [...prev, { name: 'You', message: text, time: new Date().toISOString() }]);
+//   };
+
+//   // TILE UI interactions
+//   const handleTileClick = (id) => {
+//     // select/unselect to expand tile; 'local' for the local user's tile
+//     setSelectedTile(prev => (prev === id ? null : id));
+//   };
+
+//   // Overlay dragging/resizing handlers for local camera overlay (when screen sharing)
+//   const startDrag = (e) => {
+//     e.preventDefault();
+//     const rect = e.target.getBoundingClientRect();
+//     const startX = e.clientX;
+//     const startY = e.clientY;
+//     setOverlay(prev => ({ ...prev, dragging: true, offsetX: startX - prev.x, offsetY: startY - prev.y }));
+//     window.addEventListener('mousemove', dragMove);
+//     window.addEventListener('mouseup', endDrag);
+//   };
+//   const dragMove = (e) => {
+//     setOverlay(prev => {
+//       if (!prev.dragging) return prev;
+//       // simple bounds within viewport
+//       const newX = e.clientX - prev.offsetX;
+//       const newY = e.clientY - prev.offsetY;
+//       return { ...prev, x: Math.max(8, Math.min(newX, window.innerWidth - prev.w - 8)), y: Math.max(8, Math.min(newY, window.innerHeight - prev.h - 8)) };
+//     });
+//   };
+//   const endDrag = () => {
+//     setOverlay(prev => ({ ...prev, dragging: false }));
+//     window.removeEventListener('mousemove', dragMove);
+//     window.removeEventListener('mouseup', endDrag);
+//   };
+
+//   // resizing via bottom-right corner
+//   const startResize = (e) => {
+//     e.preventDefault();
+//     setOverlay(prev => ({ ...prev, resizing: true, offsetX: e.clientX, offsetY: e.clientY }));
+//     window.addEventListener('mousemove', resizeMove);
+//     window.addEventListener('mouseup', endResize);
+//   };
+//   const resizeMove = (e) => {
+//     setOverlay(prev => {
+//       if (!prev.resizing) return prev;
+//       const dx = e.clientX - prev.offsetX;
+//       const dy = e.clientY - prev.offsetY;
+//       const newW = Math.max(120, Math.min(prev.w + dx, window.innerWidth / 1.5));
+//       const newH = Math.max(80, Math.min(prev.h + dy, window.innerHeight / 1.5));
+//       return { ...prev, w: newW, h: newH, offsetX: e.clientX, offsetY: e.clientY };
+//     });
+//   };
+//   const endResize = () => {
+//     setOverlay(prev => ({ ...prev, resizing: false }));
+//     window.removeEventListener('mousemove', resizeMove);
+//     window.removeEventListener('mouseup', endResize);
+//   };
+
+//   // Participants list combine local + remote into an array for rendering
+//   const participants = [{ id: 'local', stream: localStreamRef.current, name: name }].concat(
+//     Object.entries(remoteStreams).map(([id, stream]) => ({ id, stream, name: id }))
+//   );
+
+//   // Render
+//   return (
+//     <div className="fixed inset-0 flex flex-col bg-gray-900 text-white">
+//       {/* Top bar (room info) */}
+//       <header className="flex items-center justify-between p-3 border-b border-white/10">
+//         <div className="flex items-center gap-3">
+//           <div className="font-semibold">CamMeet</div>
+//           <div className="text-sm text-gray-300">Room: <span className="font-mono text-xs ml-1">{roomId}</span></div>
+//         </div>
+//         <div className="flex items-center gap-2">
+//           <div className="text-sm text-gray-300">You: {name}</div>
+//         </div>
+//       </header>
+
+//       {/* Main area */}
+//       <div className="flex-1 flex overflow-hidden">
+//         {/* Participants grid - takes whole width when chat closed, left side when chat open */}
+//         <main className={`flex-1 transition-all duration-200 ${showChat ? 'w-3/4' : 'w-full'} p-3`}>
+//           <div className={`w-full h-full bg-black/60 rounded-lg p-2 flex items-stretch`}>
+//             {/* Grid: if one selected tile expand it, else show responsive grid of squares */}
+//             {selectedTile ? (
+//               // Expanded view - show selected tile big
+//               <div className="relative w-full h-full rounded overflow-hidden">
+//                 <ExpandedTile
+//                   selectedId={selectedTile}
+//                   participants={participants}
+//                   localVideoRef={localVideoRef}
+//                   localStreamRef={localStreamRef}
+//                   isScreenSharing={isScreenSharing}
+//                   overlay={overlay}
+//                   startDrag={startDrag}
+//                   startResize={startResize}
+//                 />
+//               </div>
+//             ) : (
+//               // Grid view - display all tiles in responsive grid
+//               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 w-full h-full">
+//                 {participants.map(p => (
+//                   <Tile
+//                     key={p.id}
+//                     part={p}
+//                     onClick={() => handleTileClick(p.id)}
+//                     isLocal={p.id === 'local'}
+//                     localVideoRef={localVideoRef}
+//                     isScreenSharing={isScreenSharing}
+//                   />
+//                 ))}
+//               </div>
+//             )}
+//           </div>
+//         </main>
+
+//         {/* Chat pane */}
+//         {showChat && (
+//           <aside className="w-1/4 border-l border-white/10 bg-white/5 p-3 overflow-auto">
+//             <div className="text-sm font-semibold mb-3">Chat</div>
+//             <div className="flex flex-col gap-3">
+//               <div className="flex-1 space-y-2">
+//                 {chat.map((m, i) => (
+//                   <div key={i} className="text-sm">
+//                     <div className="font-semibold">{m.name} <span className="text-xs text-gray-300 ml-2">{new Date(m.time).toLocaleTimeString()}</span></div>
+//                     <div className="text-gray-100">{m.message}</div>
+//                   </div>
+//                 ))}
+//               </div>
+//             </div>
+//             <ChatInput onSend={sendChat} />
+//           </aside>
+//         )}
+//       </div>
+
+//       {/* Bottom controls */}
+//       <footer className="p-3 bg-black/70 border-t border-white/10 flex items-center justify-center gap-6">
+//         <button onClick={toggleMute} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+//           {isMuted ? <MicOffIcon /> : <MicOnIcon />} <span className="hidden sm:inline text-sm">{isMuted ? 'Unmute' : 'Mute'}</span>
+//         </button>
+
+//         <button onClick={toggleCam} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+//           {camOn ? <CamOnIcon /> : <CamOffIcon />} <span className="hidden sm:inline text-sm">{camOn ? 'Camera' : 'Camera Off'}</span>
+//         </button>
+
+//         <button onClick={shareScreen} className={`flex items-center gap-2 px-4 py-2 rounded ${isScreenSharing ? 'bg-green-600' : 'bg-white/10'} hover:opacity-90`}>
+//           <ScreenIcon /> <span className="hidden sm:inline text-sm">{isScreenSharing ? 'Stop Share' : 'Share Screen'}</span>
+//         </button>
+
+//         <button onClick={() => setShowChat(prev => !prev)} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+//           <ChatIcon /> <span className="hidden sm:inline text-sm">Chat</span>
+//         </button>
+//       </footer>
+
+//       {/* Local camera overlay (floating) shown only when sharing screen and currently in expanded view or grid - it's shown inside ExpandedTile; we keep this here in DOM for accessibility */}
+//       {isScreenSharing && selectedTile === 'local' && localStreamRef.current && (
+//         <div
+//           className="fixed z-50"
+//           style={{ left: overlay.x, top: overlay.y, width: overlay.w, height: overlay.h, cursor: overlay.dragging ? 'grabbing' : 'grab' }}
+//         >
+//           <div
+//             onMouseDown={startDrag}
+//             className="w-full h-full bg-black rounded overflow-hidden border border-white/20"
+//             style={{ touchAction: 'none' }}
+//           >
+//             <video className="w-full h-full object-cover" autoPlay playsInline muted ref={el => { if (el && !el.srcObject) el.srcObject = localStreamRef.current; }} />
+//             {/* resize handle */}
+//             <div onMouseDown={startResize} className="absolute right-1 bottom-1 w-4 h-4 bg-white/30 rounded cursor-nwse-resize" />
+//           </div>
+//         </div>
+//       )}
+//     </div>
+//   );
+// }
+
+// /* Tile component: square tile showing stream or placeholder */
+// function Tile({ part, onClick, isLocal, localVideoRef, isScreenSharing }) {
+//   // For local tile, we show the main localVideoRef's srcObject (which may be camera or screen)
+//   if (isLocal) {
+//     return (
+//       <div onClick={onClick} className="relative bg-black rounded overflow-hidden aspect-square cursor-pointer">
+//         <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover bg-black" />
+//         <div className="absolute left-2 top-2 bg-black/50 text-xs px-2 py-1 rounded">{part.name}</div>
+//       </div>
+//     );
+//   }
+
+//   // remote
+//   return (
+//     <div onClick={onClick} className="relative bg-black rounded overflow-hidden aspect-square cursor-pointer">
+//       <RemoteVideo stream={part.stream} />
+//       <div className="absolute left-2 top-2 bg-black/50 text-xs px-2 py-1 rounded">{part.name}</div>
+//     </div>
+//   );
+// }
+
+// /* ExpandedTile: large centered tile for selected participant.
+//    If selectedId === 'local' and isScreenSharing, shows local screen as main
+//    and renders camera overlay (the overlay element is handled in parent) */
+// function ExpandedTile({ selectedId, participants, localVideoRef, localStreamRef, isScreenSharing, overlay, startDrag, startResize }) {
+//   const selected = participants.find(p => p.id === selectedId);
+//   if (!selected) return <div className="w-full h-full flex items-center justify-center text-gray-300">Participant not found</div>;
+
+//   if (selected.id === 'local') {
+//     // show local video ref (may be screen or camera)
+//     return (
+//       <div className="w-full h-full relative rounded overflow-hidden">
+//         <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover bg-black" />
+//         <div className="absolute left-3 top-3 bg-black/50 px-3 py-1 rounded text-sm">{selected.name} (You)</div>
+
+//         {/* If user is screen-sharing, show small camera overlay inside this tile too */}
+//         {isScreenSharing && localStreamRef.current && (
+//           <div className="absolute right-4 bottom-4 w-40 h-28 bg-black border border-white/20 rounded overflow-hidden">
+//             <video className="w-full h-full object-cover" autoPlay playsInline muted ref={el => { if (el && !el.srcObject) el.srcObject = localStreamRef.current; }} />
+//           </div>
+//         )}
+//       </div>
+//     );
+//   }
+
+//   // remote selected participant: show their stream
+//   return (
+//     <div className="w-full h-full relative rounded overflow-hidden">
+//       <RemoteVideo stream={selected.stream} large />
+//       <div className="absolute left-3 top-3 bg-black/50 px-3 py-1 rounded text-sm">{selected.name}</div>
+//     </div>
+//   );
+// }
+
+// /* RemoteVideo: helper to render remote MediaStream into a video element */
+// function RemoteVideo({ stream, large }) {
+//   const ref = useRef();
+//   useEffect(() => {
+//     if (ref.current && stream) {
+//       try {
+//         ref.current.srcObject = stream;
+//       } catch (e) {
+//         console.warn('assigning srcObject failed', e);
+//       }
+//     }
+//   }, [stream]);
+
+//   return <video ref={ref} autoPlay playsInline className={`w-full h-full object-cover bg-black ${large ? '' : ''}`} />;
+// }
+
+// /* Chat input component */
+// function ChatInput({ onSend }) {
+//   const [val, setVal] = useState('');
+//   const submit = (e) => {
+//     e?.preventDefault();
+//     const v = val.trim();
+//     if (!v) return;
+//     onSend(v);
+//     setVal('');
+//   };
+//   return (
+//     <form onSubmit={submit} className="mt-3">
+//       <div className="flex gap-2">
+//         <input value={val} onChange={e => setVal(e.target.value)} placeholder="Write a message..." className="flex-1 p-2 bg-white/5 rounded border border-white/10" />
+//         <button type="submit" className="px-3 py-2 bg-green-600 rounded">Send</button>
+//       </div>
+//     </form>
+//   );
+// }
+
+// /* Icons (simple inline SVGs) */
+// function MicOnIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M19 11v1a7 7 0 0 1-14 0v-1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M12 19v3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// function MicOffIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 9v3a3 3 0 0 0 5.12 2.39" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M15 8.71V5a3 3 0 0 0-6 0v3.71" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 3l18 18" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// function CamOnIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="13" height="12" rx="2" stroke="white" strokeWidth="1.5"/><path d="M16 8l4-2v12l-4-2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// function CamOffIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="13" height="12" rx="2" stroke="white" strokeWidth="1.5"/><path d="M3 3l18 18" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// function ScreenIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="14" rx="2" stroke="white" strokeWidth="1.5"/><path d="M8 21h8" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// function ChatIcon() {
+//   return (
+//     <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+//   );
+// }
+// client/src/pages/Meeting.jsx
+import React, { useEffect, useRef, useState } from 'react';
+import { useLocation, useParams } from 'react-router-dom';
+import { io } from 'socket.io-client';
+
+const SERVER_URL = import.meta.env.VITE_SERVER_URL || 'http://localhost:5000';
+const ICE_SERVERS = [{ urls: 'stun:stun.l.google.com:19302' }];
+
+export default function Meeting() {
+  const { roomId } = useParams();
+  const { state } = useLocation();
+  const name = state?.name || 'Guest';
+  const isCreator = state?.isCreator || false;
+
+  // signaling refs/state
+  const socketRef = useRef(null);
+  const localVideoRef = useRef(null);
+  const localStreamRef = useRef(null);
+  const peersRef = useRef({});
+
+  // UI / app state
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const [chat, setChat] = useState([]);
+  const [showChat, setShowChat] = useState(false);
+  const [selectedTile, setSelectedTile] = useState(null); // 'local' or socketId
+  const [isScreenSharing, setIsScreenSharing] = useState(false);
+  const [isMuted, setMuted] = useState(false);
+  const [camOn, setCamOn] = useState(true);
+
+  // overlay (local camera shown during screen share) - position and size
+  const [overlay, setOverlay] = useState({ x: 20, y: 20, w: 240, h: 160, dragging: false, resizing: false, offsetX: 0, offsetY: 0 });
+
+  useEffect(() => {
+    const s = io(SERVER_URL);
+    socketRef.current = s;
+    let mounted = true;
+
+    function addChat(msg) {
+      setChat(prev => [...prev, msg]);
+    }
+
+    async function startLocalCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        if (!mounted) {
+          stream.getTracks().forEach(t => t.stop());
+          return;
+        }
+        localStreamRef.current = stream;
+        if (localVideoRef.current && !isScreenSharing) localVideoRef.current.srcObject = stream;
+      } catch (err) {
+        console.warn('getUserMedia error', err);
+        alert('Unable to access camera/microphone: ' + (err?.message || err));
+      }
+    }
+    startLocalCamera();
+
+    // signaling helpers (kept inside useEffect to avoid stale deps)
+    async function createPeerConnection(peerSocketId) {
+      const pc = new RTCPeerConnection({ iceServers: ICE_SERVERS });
+
+      if (localStreamRef.current) {
+        try {
+          localStreamRef.current.getTracks().forEach(track => pc.addTrack(track, localStreamRef.current));
+        } catch (err) {
+          console.warn('Error adding local tracks', err);
+        }
+      }
+
+      pc.ontrack = (ev) => {
+        if (!mounted) return;
+        setRemoteStreams(prev => ({ ...prev, [peerSocketId]: ev.streams[0] }));
+      };
+
+      pc.onicecandidate = (event) => {
+        if (event.candidate && socketRef.current && socketRef.current.connected) {
+          socketRef.current.emit('ice-candidate', { to: peerSocketId, candidate: event.candidate, from: socketRef.current.id });
+        }
+      };
+
+      peersRef.current[peerSocketId] = pc;
+      return pc;
+    }
+
+    async function createOffer(targetSocketId) {
+      let pc = peersRef.current[targetSocketId];
+      if (!pc) pc = await createPeerConnection(targetSocketId);
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('offer', { to: targetSocketId, sdp: pc.localDescription, from: socketRef.current.id, name });
+      }
+    }
+
+    async function handleOffer(from, sdp) {
+      let pc = peersRef.current[from];
+      if (!pc) pc = await createPeerConnection(from);
+      try {
+        await pc.setRemoteDescription(new RTCSessionDescription(sdp));
+      } catch (err) {
+        console.warn('setRemoteDescription failed', err);
+      }
+      const answer = await pc.createAnswer();
+      await pc.setLocalDescription(answer);
+      if (socketRef.current && socketRef.current.connected) {
+        socketRef.current.emit('answer', { to: from, sdp: pc.localDescription, from: socketRef.current.id });
+      }
+    }
+
+    // socket handlers
+    s.on('connect', () => {
+      if (isCreator) s.emit('create-room', { roomId, name });
+      else s.emit('join-room', { roomId, name });
+    });
+
+    s.on('user-joined', async ({ socketId }) => {
+      try { await createOffer(socketId); } catch (err) { console.warn('createOffer error', err); }
+    });
+
+    s.on('existing-participants', async (list) => {
+      for (const p of list) {
+        try { await createOffer(p.socketId); } catch (err) { console.warn('createOffer (existing) error', err); }
+      }
+    });
+
+    s.on('offer', async ({ from, sdp }) => {
+      try { await handleOffer(from, sdp); } catch (err) { console.warn('handleOffer error', err); }
+    });
+
+    s.on('answer', async ({ from, sdp }) => {
+      const pc = peersRef.current[from];
+      if (pc) {
+        try { await pc.setRemoteDescription(new RTCSessionDescription(sdp)); } catch (err) { console.warn('setRemoteDescription (answer) failed', err); }
+      }
+    });
+
+    s.on('ice-candidate', async ({ from, candidate }) => {
+      const pc = peersRef.current[from];
+      if (pc && candidate) {
+        try { await pc.addIceCandidate(candidate); } catch (err) { console.warn('addIceCandidate failed', err); }
+      }
+    });
+
+    s.on('user-left', ({ socketId }) => {
+      try {
+        if (peersRef.current && peersRef.current[socketId]) {
+          const pc = peersRef.current[socketId];
+          if (pc && typeof pc.close === 'function') {
+            try { pc.close(); } catch (closeErr) { console.warn('Error closing pc', closeErr); }
+          }
+          try { delete peersRef.current[socketId]; } catch (delErr) { console.warn('Error deleting peer ref', delErr); }
+        }
+        setRemoteStreams(prev => {
+          if (!prev || typeof prev !== 'object') return prev;
+          const copy = { ...prev };
+          if (copy[socketId]) delete copy[socketId];
+          return copy;
+        });
+      } catch (e) {
+        console.warn('user-left handler failed', e);
+      }
+    });
+
+    s.on('chat-message', ({ name: senderName, message, time }) => {
+      addChat({ name: senderName, message, time });
+    });
+
+    // cleanup
+    return () => {
+      mounted = false;
+      if (peersRef.current && typeof peersRef.current === 'object') {
+        Object.values(peersRef.current).forEach(pc => {
+          if (pc && typeof pc.close === 'function') {
+            try { pc.close(); } catch (err) { console.warn('Peer close failed:', err); }
+          }
+        });
+        peersRef.current = {};
+      }
+
+      if (localStreamRef.current instanceof MediaStream) {
+        try { localStreamRef.current.getTracks().forEach(track => { if (track && typeof track.stop === 'function') track.stop(); }); } catch (err) { console.warn('Error stopping tracks', err); } finally { localStreamRef.current = null; }
+      }
+
+      const sock = socketRef.current;
+      if (sock) {
+        try { if (typeof sock.removeAllListeners === 'function') sock.removeAllListeners(); else if (typeof sock.off === 'function') sock.off(); } catch (err) { console.warn('Error removing socket listeners', err); }
+        try { if (typeof sock.disconnect === 'function') sock.disconnect(); } catch (err) { console.warn('Error disconnecting socket', err); }
+        socketRef.current = null;
+      }
+    };
+  }, [isCreator, name, roomId]);
+
+  // Controls
+  const toggleMute = () => {
+    if (!localStreamRef.current) return;
+    localStreamRef.current.getAudioTracks().forEach(t => (t.enabled = !t.enabled));
+    setMuted(prev => !prev);
+  };
+
+  const toggleCam = () => {
+    if (!localStreamRef.current) return;
+    localStreamRef.current.getVideoTracks().forEach(t => (t.enabled = !t.enabled));
+    setCamOn(prev => !prev);
+  };
+
+  // Screen share: replace outgoing video track for peers, show screen locally,
+  // and manage overlay (overlay remains available while sharing)
+  const shareScreen = async () => {
+    if (isScreenSharing) {
+      // stop screen sharing: restore camera locally & to peers
+      if (localVideoRef.current && localStreamRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+      for (const pid in peersRef.current) {
+        const pc = peersRef.current[pid];
+        const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+        if (senders[0] && localStreamRef.current?.getVideoTracks()[0]) {
+          try { await senders[0].replaceTrack(localStreamRef.current.getVideoTracks()[0]); } catch (err) { console.warn('replaceTrack restore error', err); }
+        }
+      }
+      setIsScreenSharing(false);
+      return;
+    }
+
+    try {
+      const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+      if (!screenStream) return;
+      if (localVideoRef.current) localVideoRef.current.srcObject = screenStream;
+      const screenTrack = screenStream.getVideoTracks()[0];
+      for (const pid in peersRef.current) {
+        const pc = peersRef.current[pid];
+        const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+        if (senders[0]) {
+          try { await senders[0].replaceTrack(screenTrack); } catch (err) { console.warn('replaceTrack to peers failed', err); }
+        }
+      }
+      setIsScreenSharing(true);
+
+      screenTrack.onended = async () => {
+        try {
+          if (localStreamRef.current && localVideoRef.current) localVideoRef.current.srcObject = localStreamRef.current;
+          for (const pid in peersRef.current) {
+            const pc = peersRef.current[pid];
+            const senders = pc.getSenders().filter(s => s.track && s.track.kind === 'video');
+            if (senders[0] && localStreamRef.current?.getVideoTracks()[0]) {
+              try { await senders[0].replaceTrack(localStreamRef.current.getVideoTracks()[0]); } catch (err) { console.warn('restore after screen end failed', err); }
+            }
+          }
+        } catch (err) {
+          console.warn('error while restoring camera after screen share', err);
+        } finally {
+          setIsScreenSharing(false);
+        }
+      };
+    } catch (err) {
+      console.warn('Screen share failed', err);
+    }
+  };
+
+  // Chat send
+  const sendChat = (text) => {
+    if (!text || !socketRef.current) return;
+    socketRef.current.emit('chat-message', { roomId, message: text, name });
+    setChat(prev => [...prev, { name: 'You', message: text, time: new Date().toISOString() }]);
+  };
+
+  // Tile click
+  const handleTileClick = (id) => {
+    setSelectedTile(prev => (prev === id ? null : id));
+  };
+
+  // Overlay drag & resize handlers (used when overlay is shown)
+  const startDrag = (e) => {
+    e.preventDefault();
+    const startX = e.clientX;
+    const startY = e.clientY;
+    setOverlay(prev => ({ ...prev, dragging: true, offsetX: startX - prev.x, offsetY: startY - prev.y }));
+    window.addEventListener('mousemove', dragMove);
+    window.addEventListener('mouseup', endDrag);
+  };
+  const dragMove = (e) => {
+    setOverlay(prev => {
+      if (!prev.dragging) return prev;
+      const newX = e.clientX - prev.offsetX;
+      const newY = e.clientY - prev.offsetY;
+      return { ...prev, x: Math.max(8, Math.min(newX, window.innerWidth - prev.w - 8)), y: Math.max(8, Math.min(newY, window.innerHeight - prev.h - 8)) };
+    });
+  };
+  const endDrag = () => {
+    setOverlay(prev => ({ ...prev, dragging: false }));
+    window.removeEventListener('mousemove', dragMove);
+    window.removeEventListener('mouseup', endDrag);
+  };
+
+  const startResize = (e) => {
+    e.preventDefault();
+    setOverlay(prev => ({ ...prev, resizing: true, offsetX: e.clientX, offsetY: e.clientY }));
+    window.addEventListener('mousemove', resizeMove);
+    window.addEventListener('mouseup', endResize);
+  };
+  const resizeMove = (e) => {
+    setOverlay(prev => {
+      if (!prev.resizing) return prev;
+      const dx = e.clientX - prev.offsetX;
+      const dy = e.clientY - prev.offsetY;
+      const newW = Math.max(120, Math.min(prev.w + dx, window.innerWidth / 1.5));
+      const newH = Math.max(80, Math.min(prev.h + dy, window.innerHeight / 1.5));
+      return { ...prev, w: newW, h: newH, offsetX: e.clientX, offsetY: e.clientY };
+    });
+  };
+  const endResize = () => {
+    setOverlay(prev => ({ ...prev, resizing: false }));
+    window.removeEventListener('mousemove', resizeMove);
+    window.removeEventListener('mouseup', endResize);
+  };
+
+  // Build participants array: local first, then remotes
+  const participants = [{ id: 'local', stream: localStreamRef.current, name: name }].concat(
+    Object.entries(remoteStreams).map(([id, stream]) => ({ id, stream, name: id }))
+  );
+
+  return (
+    <div className="fixed inset-0 flex flex-col bg-gray-900 text-white">
+      <header className="flex items-center justify-between p-3 border-b border-white/10">
+        <div className="flex items-center gap-3">
+          <div className="font-semibold">CamMeet</div>
+          <div className="text-sm text-gray-300">Room: <span className="font-mono text-xs ml-1">{roomId}</span></div>
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="text-sm text-gray-300">You: {name}</div>
+        </div>
+      </header>
+
+      <div className="flex-1 flex overflow-hidden">
+        <main className={`flex-1 transition-all duration-200 ${showChat ? 'w-3/4' : 'w-full'} p-3`}>
+          <div className="w-full h-full bg-black/60 rounded-lg p-2 flex items-stretch">
+            {selectedTile ? (
+              <div className="relative w-full h-full rounded overflow-hidden">
+                <ExpandedTile
+                  selectedId={selectedTile}
+                  participants={participants}
+                  localVideoRef={localVideoRef}
+                  localStreamRef={localStreamRef}
+                  isScreenSharing={isScreenSharing}
+                />
+                {/* Render the draggable/resizable overlay only when screen-sharing and local is selected */}
+                {isScreenSharing && selectedTile === 'local' && localStreamRef.current && (
+                  <div
+                    className="absolute z-30"
+                    style={{ left: overlay.x, top: overlay.y, width: overlay.w, height: overlay.h, cursor: overlay.dragging ? 'grabbing' : 'grab' }}
+                  >
+                    <div onMouseDown={startDrag} className="w-full h-full bg-black rounded overflow-hidden border border-white/20" style={{ touchAction: 'none' }}>
+                      <video className="w-full h-full object-cover" autoPlay playsInline muted ref={el => { if (el && !el.srcObject) el.srcObject = localStreamRef.current; }} />
+                      <div onMouseDown={startResize} className="absolute right-1 bottom-1 w-4 h-4 bg-white/30 rounded cursor-nwse-resize" />
+                    </div>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3 w-full h-full">
+                {participants.map(p => (
+                  <Tile
+                    key={p.id}
+                    part={p}
+                    onClick={() => handleTileClick(p.id)}
+                    isLocal={p.id === 'local'}
+                    localVideoRef={localVideoRef}
+                    isScreenSharing={isScreenSharing}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </main>
+
+        {showChat && (
+          <aside className="w-1/4 border-l border-white/10 bg-white/5 p-3 overflow-auto">
+            <div className="text-sm font-semibold mb-3">Chat</div>
+            <div className="flex-1 space-y-2">
+              {chat.map((m, i) => (
+                <div key={i} className="text-sm">
+                  <div className="font-semibold">{m.name} <span className="text-xs text-gray-300 ml-2">{new Date(m.time).toLocaleTimeString()}</span></div>
+                  <div className="text-gray-100">{m.message}</div>
+                </div>
+              ))}
+            </div>
+            <ChatInput onSend={sendChat} />
+          </aside>
+        )}
+      </div>
+
+      <footer className="p-3 bg-black/70 border-t border-white/10 flex items-center justify-center gap-6">
+        <button onClick={toggleMute} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+          {isMuted ? <MicOffIcon /> : <MicOnIcon />} <span className="hidden sm:inline text-sm">{isMuted ? 'Unmute' : 'Mute'}</span>
+        </button>
+
+        <button onClick={toggleCam} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+          {camOn ? <CamOnIcon /> : <CamOffIcon />} <span className="hidden sm:inline text-sm">{camOn ? 'Camera' : 'Camera Off'}</span>
+        </button>
+
+        <button onClick={shareScreen} className={`flex items-center gap-2 px-4 py-2 rounded ${isScreenSharing ? 'bg-green-600' : 'bg-white/10'} hover:opacity-90`}>
+          <ScreenIcon /> <span className="hidden sm:inline text-sm">{isScreenSharing ? 'Stop Share' : 'Share Screen'}</span>
+        </button>
+
+        <button onClick={() => setShowChat(prev => !prev)} className="flex items-center gap-2 px-4 py-2 bg-white/10 rounded hover:bg-white/20">
+          <ChatIcon /> <span className="hidden sm:inline text-sm">Chat</span>
+        </button>
+      </footer>
+    </div>
+  );
+}
+
+/* Tile component */
+function Tile({ part, onClick, isLocal, localVideoRef }) {
+  if (isLocal) {
+    return (
+      <div onClick={onClick} className="relative bg-black rounded overflow-hidden aspect-square cursor-pointer">
+        <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover bg-black" />
+        <div className="absolute left-2 top-2 bg-black/50 text-xs px-2 py-1 rounded">{part.name}</div>
+      </div>
+    );
+  }
+
+  return (
+    <div onClick={onClick} className="relative bg-black rounded overflow-hidden aspect-square cursor-pointer">
+      <RemoteVideo stream={part.stream} />
+      <div className="absolute left-2 top-2 bg-black/50 text-xs px-2 py-1 rounded">{part.name}</div>
+    </div>
+  );
+}
+
+/* ExpandedTile - large tile view */
+function ExpandedTile({ selectedId, participants, localVideoRef, localStreamRef, isScreenSharing }) {
+  const selected = participants.find(p => p.id === selectedId);
+  if (!selected) return <div className="w-full h-full flex items-center justify-center text-gray-300">Participant not found</div>;
+
+  if (selected.id === 'local') {
+    return (
+      <div className="w-full h-full relative rounded overflow-hidden">
+        <video ref={localVideoRef} autoPlay playsInline muted className="w-full h-full object-cover bg-black" />
+        <div className="absolute left-3 top-3 bg-black/50 px-3 py-1 rounded text-sm">{selected.name} (You)</div>
+        {isScreenSharing && localStreamRef.current && (
+          <div className="absolute right-4 bottom-4 w-40 h-28 bg-black border border-white/20 rounded overflow-hidden">
+            <video className="w-full h-full object-cover" autoPlay playsInline muted ref={el => { if (el && !el.srcObject) el.srcObject = localStreamRef.current; }} />
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="w-full h-full relative rounded overflow-hidden">
+      <RemoteVideo stream={selected.stream} large />
+      <div className="absolute left-3 top-3 bg-black/50 px-3 py-1 rounded text-sm">{selected.name}</div>
+    </div>
+  );
+}
+
+/* RemoteVideo helper */
+function RemoteVideo({ stream }) {
+  const ref = useRef();
+  useEffect(() => {
+    if (ref.current && stream) {
+      try { ref.current.srcObject = stream; } catch (e) { console.warn('assign srcObject failed', e); }
+    }
+  }, [stream]);
+  return <video ref={ref} autoPlay playsInline className="w-full h-full object-cover bg-black" />;
+}
+
+/* Chat input */
+function ChatInput({ onSend }) {
+  const [val, setVal] = useState('');
+  const submit = (e) => {
+    e?.preventDefault();
+    const v = val.trim();
+    if (!v) return;
+    onSend(v);
+    setVal('');
+  };
+  return (
+    <form onSubmit={submit} className="mt-3">
+      <div className="flex gap-2">
+        <input value={val} onChange={e => setVal(e.target.value)} placeholder="Write a message..." className="flex-1 p-2 bg-white/5 rounded border border-white/10" />
+        <button type="submit" className="px-3 py-2 bg-green-600 rounded">Send</button>
+      </div>
+    </form>
+  );
+}
+
+/* Simple icons */
+function MicOnIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 14a3 3 0 0 0 3-3V5a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M19 11v1a7 7 0 0 1-14 0v-1" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M12 19v3" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
+function MicOffIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M9 9v3a3 3 0 0 0 5.12 2.39" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M15 8.71V5a3 3 0 0 0-6 0v3.71" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><path d="M3 3l18 18" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
+function CamOnIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="13" height="12" rx="2" stroke="white" strokeWidth="1.5"/><path d="M16 8l4-2v12l-4-2" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
+function CamOffIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="6" width="13" height="12" rx="2" stroke="white" strokeWidth="1.5"/><path d="M3 3l18 18" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
+function ScreenIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="18" height="14" rx="2" stroke="white" strokeWidth="1.5"/><path d="M8 21h8" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
+function ChatIcon() { return (<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>); }
